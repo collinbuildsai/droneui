@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>DroneUi</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+    <style>
+        body {
+            margin: 0;
+            background-color: #000;
+            color: #fff;
+            font-family: Monospace;
+            font-size: 13px;
+            line-height: 24px;
+            overscroll-behavior: none;
+        }
+
+        a {
+            color: #ff0;
+            text-decoration: none;
+        }
+
+        a:hover {
+            text-decoration: underline;
+        }
+
+        button {
+            background-color: #444;
+            color: white;
+            border: none;
+            margin: 2px;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background-color: #555;
+        }
+
+        #info {
+            position: absolute;
+            top: 0px;
+            width: 100%;
+            padding: 10px;
+            box-sizing: border-box;
+            text-align: center;
+            -moz-user-select: none;
+            -webkit-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
+            pointer-events: none;
+            z-index: 1; /* TODO Solve this in HTML */
+        }
+
+        a, button, input, select {
+            pointer-events: auto;
+        }
+
+        .lil-gui {
+            z-index: 2 !important; /* TODO Solve this in HTML */
+        }
+
+        @media all and ( max-width: 640px ) {
+            .lil-gui.root { 
+                right: auto;
+                top: auto;
+                max-height: 50%;
+                max-width: 80%;
+                bottom: 0;
+                left: 0;
+            }
+        }
+
+        #overlay {
+            position: absolute;
+            font-size: 16px;
+            z-index: 2;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+            background: rgba(0,0,0,0.7);
+        }
+
+        #overlay button {
+            background: transparent;
+            border: 0;
+            border: 1px solid rgb(255, 255, 255);
+            border-radius: 4px;
+            color: #ffffff;
+            padding: 12px 18px;
+            text-transform: uppercase;
+            cursor: pointer;
+        }
+
+        #notSupported {
+            width: 50%;
+            margin: auto;
+            background-color: #f00;
+            margin-top: 20px;
+            padding: 10px;
+        }
+
+        #renderContainer {
+            position: absolute; 
+            bottom: 0;
+            left: 0;
+            width: 100%; 
+            height: 100%; 
+        }
+    </style>
+</head>
+<body>
+    <!-- Video element for the camera feed -->
+    <video id="camera-feed" autoplay playsinline style="position: absolute; bottom: 0; left: 0; width: 100%; height: 100%; z-index: 0;"></video>
+
+    <div id="voice-commands-log" style="position: absolute; top: 0; left: 0; width: 100%; background-color: rgba(255, 255, 255, 0.8); color: black; text-align: center; padding: 10px; z-index: 1;">
+        <span id="latest-command">Voice Commands Log</span>
+    </div>
+
+    <!-- Buttons for controlling the drone -->
+    <div style="position: absolute; z-index: 10; top: 40px; left: 10px;">
+        <button id="reset">Reset Position</button>
+        <button id="tiltUp">Back</button>
+        <button id="tiltDown">Forward</button>
+        <button id="tiltLeft">Left</button>
+        <button id="tiltRight">Right</button>
+        <button id="armDrone">Arm/Disarm</button>
+        <button id="microphoneButton">Listen On</button>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@latest/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@latest/examples/jsm/"
+            }
+        }
+    </script>
+
+    <div id="renderContainer"></div> <!-- Container for the renderer -->
+
+    <script type="module">
+
+        // Voice commands
+        // Define the wake word and the action to be performed
+        const WAKE_WORD = 'hey piper'; // Define your wake word here
+        function onWakeWordDetected() {
+            // Action to be performed when the wake word is detected
+            console.log('Wake word detected...');
+            // Create a new speech synthesis utterance
+            const speech = new SpeechSynthesisUtterance('What can I do for you?');
+            window.speechSynthesis.speak(speech);
+            document.getElementById('latest-command').textContent = `AI Response: ${speech.text}`;
+        }
+
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
+
+        let camera, scene, renderer;
+        let droneModel;
+        let propellerArmed = false;
+
+        async function setupWebcam() {
+            const video = document.getElementById('camera-feed');
+            const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+            video.srcObject = stream;
+            video.play();
+
+            const videoTexture = new THREE.VideoTexture(video);
+            scene.background = videoTexture;
+        }
+
+        init();
+        requestAnimationFrame(render);
+
+        function init() {
+            const container = document.getElementById('renderContainer');
+
+            camera = new THREE.PerspectiveCamera(60, container.offsetWidth / container.offsetHeight, 0.5, 50);
+            camera.position.set(-180, 45, 10);
+
+            scene = new THREE.Scene();
+
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight);
+
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+            directionalLight.position.set(0, 1, 0);
+            scene.add(directionalLight);
+
+            new RGBELoader()
+                .setPath('tello/background/')
+                .load('kloofendal_43d_clear_puresky_4k.hdr', function (texture) {
+                    texture.mapping = THREE.EquirectangularReflectionMapping;
+                    scene.environment = texture;
+                    setupWebcam();
+                });
+
+            const loader = new GLTFLoader().setPath('tello/drone/');
+            loader.load('scene.gltf', function (gltf) {
+                droneModel = gltf.scene;
+                droneModel.position.set(0, 0, 0);
+
+                // Traverse through all objects in the model
+                droneModel.traverse(function (object) {
+                    if (object.isMesh) {
+                        object.material.opacity = 0.4;
+                        object.material.transparent = true;
+                    }
+                });
+
+                scene.add(droneModel);
+                camera.lookAt(droneModel.position);
+            });
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            container.appendChild(renderer.domElement);
+
+            const controls = new OrbitControls(camera, renderer.domElement);
+            controls.addEventListener('change', render);
+            controls.minDistance = 5;
+            controls.maxDistance = 20;
+            controls.target.set(0, 0, 0);
+            controls.update();
+
+            window.addEventListener('resize', onWindowResize);
+
+            // Event listeners for buttons
+            document.getElementById('tiltUp').addEventListener('click', () => tiltDrone('up'));
+            document.getElementById('tiltDown').addEventListener('click', () => tiltDrone('down'));
+            document.getElementById('tiltLeft').addEventListener('click', () => tiltDrone('left'));
+            document.getElementById('tiltRight').addEventListener('click', () => tiltDrone('right'));
+            document.getElementById('armDrone').addEventListener('click', togglePropellerArmed);
+            document.getElementById('reset').addEventListener('click', resetDronePosition);
+            document.getElementById('microphoneButton').addEventListener('click', toggleListening);
+        }
+
+        function tiltDrone(direction) {
+            switch (direction) {
+                case 'left':
+                    droneModel.rotation.x -= 0.5;
+                    break;
+                case 'right':
+                    droneModel.rotation.x += 0.5;
+                    break;
+                case 'up':
+                    droneModel.rotation.z += 0.25;
+                    break;
+                case 'down':
+                    droneModel.rotation.z -= 0.25;
+                    break;
+            }
+        }
+
+        // Function to reset the drone's position and rotation
+        function resetDronePosition() {
+            if (droneModel) {
+                // Reset position
+                droneModel.position.set(0, 0, 0); // Change these values to your initial position
+                // Reset rotation
+                droneModel.rotation.set(0, 0, 0);
+            }
+        }
+
+        function togglePropellerArmed() {
+            propellerArmed = !propellerArmed;
+
+            // Update the button label based on the propellerArmed state
+            const armButton = document.getElementById('armDrone');
+            if (propellerArmed) {
+                armButton.textContent = 'Disarm Drone';
+            } else {
+                armButton.textContent = 'Arm Drone';
+            }
+        }
+
+        // When initializing the page, set the initial text for the button
+        document.addEventListener('DOMContentLoaded', function() {
+            const armButton = document.getElementById('armDrone');
+            armButton.textContent = 'Arm Drone'; // Initial button text
+        });
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animateBlades() {
+            if (droneModel && propellerArmed) {
+                droneModel.traverse(function (node) {
+                    if (node.name.startsWith('pervane')) {
+                        node.rotation.y += 0.5;
+                    }
+                });
+            }
+        }
+
+        function render() {
+            animateBlades();
+            renderer.render(scene, camera);
+            requestAnimationFrame(render);
+        }
+
+        function flashCommandLog() {
+            const logElement = document.getElementById('voice-commands-log');
+            logElement.style.backgroundColor = 'red';
+            setTimeout(() => {
+            logElement.style.backgroundColor = 'rgba(255, 255, 255, 0.8)';
+            }, 500); // Change back to transparent after 500 milliseconds
+        }
+
+    // Define recognition as a global variable
+    let recognition;
+    let isListening = false;
+
+    if ('webkitSpeechRecognition' in window) {
+      recognition = new webkitSpeechRecognition();
+      recognition.continuous = true;
+      recognition.lang = 'en-US';
+
+      recognition.onresult = function(event) {
+        const last = event.results.length - 1;
+        const command = event.results[last][0].transcript.trim().toLowerCase();
+
+        console.log('Voice command received:', command); // Log received command for debugging
+
+        // Update and flash the voice commands log
+        document.getElementById('latest-command').textContent = `Last Command: ${command}`;
+        flashCommandLog();
+        
+        switch (command) {
+          case 'arm drone':
+            if (!propellerArmed) {
+                togglePropellerArmed();
+            }
+            break;
+          case 'disarm drone':
+            if (propellerArmed) {
+                togglePropellerArmed();
+            }
+            break;
+          case 'up':
+            tiltDrone('up');
+            break;
+          case 'down':
+            tiltDrone('down');
+            break;
+          case 'left':
+            tiltDrone('left');
+            break;
+          case 'right':
+            tiltDrone('right');
+            break;
+          case 'reset':
+            resetDronePosition();
+            break;
+          case WAKE_WORD:
+            onWakeWordDetected();
+            break;
+          default:
+            console.error('Unrecognized command:', command);
+        }
+      };
+
+      
+      recognition.onerror = function(event) {
+        console.error('Speech recognition error:', event.error);
+      };
+
+      recognition.onend = function() {
+        if (isListening) {
+            console.log('Speech recognition service restarted');
+            recognition.start(); // Restart recognition when it ends, if listening is on
+        } else {
+            console.log('Speech recognition service disconnected');
+        }
+      };
+
+    // Start the recognition immediately if isListening is true
+    if (isListening) {
+        recognition.start();
+    }
+    
+    } else {
+      console.error('webkitSpeechRecognition is not available in this browser.');
+    }
+
+    // Function to toggle listening state
+    function toggleListening() {
+        isListening = !isListening;
+        const micButton = document.getElementById('microphoneButton');
+
+        if (isListening) {
+            micButton.textContent = 'Listen Off';
+            startRecognition();
+        } else {
+            micButton.textContent = 'Listen On';
+            stopRecognition();
+        }
+    }
+
+    // Start the speech recognition service
+    function startRecognition() {
+        if ('webkitSpeechRecognition' in window) {
+            recognition.start();
+        } else {
+            console.error('webkitSpeechRecognition is not available in this browser.');
+        }
+    }
+
+    // Stop the speech recognition service
+    function stopRecognition() {
+        if ('webkitSpeechRecognition' in window) {
+            recognition.stop();
+        }
+    }
+    </script>
+</body>
+</html>
